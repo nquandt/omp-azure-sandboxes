@@ -4,6 +4,14 @@
   "description": "Run coding-agent sessions in Azure Container Apps Sandboxes",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nquandt/omp-azure-sandboxes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nquandt/omp-azure-sandboxes/issues"
+  },
+  "homepage": "https://github.com/nquandt/omp-azure-sandboxes#readme",
   "type": "module",
   "bin": {
     "sand": "./src/main.ts"

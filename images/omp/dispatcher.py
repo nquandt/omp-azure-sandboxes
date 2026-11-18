@@ -21,6 +21,7 @@ JOBS = STATE / "jobs"
 CLIENTS = STATE / "gateway-clients.json"
 LOCK = threading.Lock()
 MAX_BODY = 256 * 1024
+JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 
 def required(name: str) -> str:
@@ -165,6 +166,8 @@ def revoke(job: dict) -> None:
 
 
 def sandbox_status(job: dict) -> dict:
+    if job.get("resourcesDeleted") or "result" in job:
+        return job
     output = run(
         "sandbox",
         "exec",
@@ -184,13 +187,73 @@ def sandbox_status(job: dict) -> dict:
     return {**job, **status}
 
 
+def delete_job_resources(job: dict) -> None:
+    if not job.get("sandboxDeleted"):
+        sandbox_id = find_sandbox(job["id"], 1)
+        if sandbox_id is not None:
+            run(
+                "sandbox",
+                "delete",
+                "--group",
+                SANDBOX_GROUP,
+                "--id",
+                sandbox_id,
+                "--yes",
+            )
+        job["sandboxDeleted"] = True
+        write_job(job)
+    if not job.get("volumeDeleted"):
+        output = run(
+            "sandboxgroup",
+            "volume",
+            "list",
+            "--group",
+            SANDBOX_GROUP,
+            "--selector",
+            f"job={job['id']}",
+        )
+        if parse_json(output):
+            run(
+                "sandboxgroup",
+                "volume",
+                "delete",
+                "--group",
+                SANDBOX_GROUP,
+                "--selector",
+                f"job={job['id']}",
+            )
+        job["volumeDeleted"] = True
+        job["resourcesDeleted"] = True
+        write_job(job)
+
+
+def collect_job(job: dict, status: dict | None = None) -> dict:
+    status = sandbox_status(job) if status is None else status
+    if status.get("state") not in {"completed", "failed"}:
+        return status
+    output = run(
+        "sandbox",
+        "exec",
+        "--group",
+        SANDBOX_GROUP,
+        "--id",
+        job["sandboxId"],
+        "--command",
+        "cat /state/result.txt",
+    )
+    job.update(status)
+    job["result"] = command_stdout(output)
+    job["finishedAt"] = int(status.get("finishedAt", time.time()))
+    revoke(job)
+    delete_job_resources(job)
+    return job
+
+
 def stop_job(job: dict, state: str) -> None:
-    try:
-        run("sandbox", "stop", "--group", SANDBOX_GROUP, "--id", job["sandboxId"])
-    finally:
-        job["state"] = state
-        job["finishedAt"] = int(time.time())
-        revoke(job)
+    job["state"] = state
+    job["finishedAt"] = int(time.time())
+    revoke(job)
+    delete_job_resources(job)
 
 
 def cleanup() -> None:
@@ -199,8 +262,17 @@ def cleanup() -> None:
         for path in JOBS.glob("*.json"):
             try:
                 job = json.loads(path.read_text())
-                if not job.get("revoked") and now >= job["expiresAt"]:
-                    stop_job(job, "expired")
+                if job.get("resourcesDeleted"):
+                    if now - int(job.get("finishedAt", now)) >= JOB_RETENTION_SECONDS:
+                        path.unlink(missing_ok=True)
+                elif job.get("revoked"):
+                    delete_job_resources(job)
+                elif now >= job["expiresAt"]:
+                    status = sandbox_status(job)
+                    if status.get("state") in {"completed", "failed"}:
+                        collect_job(job, status)
+                    else:
+                        stop_job(job, "expired")
             except Exception as error:
                 print(f"cleanup failed for {path.name}: {error}", flush=True)
         time.sleep(30)
@@ -390,27 +462,24 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) in (3, 4) and parts[:2] == ["v1", "jobs"]:
                 job = read_job(parts[2])
                 status = sandbox_status(job)
-                if status.get("state") in {"completed", "failed"}:
-                    revoke(job)
+                if (
+                    status.get("state") in {"completed", "failed"}
+                    and "result" not in job
+                ):
+                    status = collect_job(job, status)
                 if len(parts) == 4:
                     if parts[3] != "result":
                         raise KeyError(parts[3])
                     if status.get("state") not in {"completed", "failed"}:
-                        self.respond(409, {"error": "job is not complete", "state": status.get("state")})
+                        self.respond(
+                            409,
+                            {"error": "job is not complete", "state": status.get("state")},
+                        )
                         return
-                    output = run(
-                        "sandbox",
-                        "exec",
-                        "--group",
-                        SANDBOX_GROUP,
-                        "--id",
-                        job["sandboxId"],
-                        "--command",
-                        "cat /state/result.txt",
-                    )
-                    self.respond(200, {**status, "result": command_stdout(output)})
+                    self.respond(200, status)
                     return
-                self.respond(200, status)
+                public_status = {key: value for key, value in status.items() if key != "result"}
+                self.respond(200, public_status)
                 return
             raise KeyError(self.path)
         except KeyError:

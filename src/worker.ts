@@ -6,6 +6,7 @@ import { type SandConfig, writeConfig } from "./config";
 import { capture, runInteractive } from "./process";
 import { WORKER_DISK_NAME, WORKER_IMAGE_TAG } from "./worker-version";
 import { attachOmpSession } from "./ssh";
+import { type UploadedWorkspace, uploadWorkspace } from "./workspace";
 
 function services(config: SandConfig): NonNullable<SandConfig["services"]> {
   if (config.services === undefined) {
@@ -457,6 +458,7 @@ export interface OmpSessionOptions {
   model?: string;
   repository?: string;
   prompt?: string;
+  workspace?: string;
 }
 
 function shellQuote(value: string): string {
@@ -466,6 +468,20 @@ function shellQuote(value: string): string {
 export async function createOmpSandbox(
   config: SandConfig,
   options: OmpSessionOptions,
+): Promise<string> {
+  const workspace =
+    options.workspace === undefined ? undefined : await uploadWorkspace(config, options.workspace);
+  try {
+    return await createPreparedOmpSandbox(config, options, workspace);
+  } finally {
+    await workspace?.dispose();
+  }
+}
+
+async function createPreparedOmpSandbox(
+  config: SandConfig,
+  options: OmpSessionOptions,
+  workspace: UploadedWorkspace | undefined,
 ): Promise<string> {
   const configured = requireCurrentWorker(config);
   if (configured.workerDiskId === undefined) {
@@ -511,6 +527,10 @@ export async function createOmpSandbox(
   }
   if (options.repository !== undefined) {
     environment.SAND_REPOSITORY = options.repository;
+  }
+  if (workspace !== undefined) {
+    environment.SAND_WORKSPACE_URL = workspace.url;
+    environment.SAND_WORKSPACE_SHA256 = workspace.sha256;
   }
   const manifestDirectory = await mkdtemp(join(tmpdir(), "sand-manifest-"));
   let createOutput: string;
@@ -599,6 +619,25 @@ export async function createOmpSandbox(
     ],
     "session state initialization",
   );
+  if (workspace !== undefined) {
+    await requireCapture(
+      [
+        "aca",
+        "sandbox",
+        "exec",
+        ...scope(config),
+        "--group",
+        config.azure.sandboxGroup,
+        "--id",
+        sandboxId,
+        "--command",
+        "/usr/local/bin/sand-workspace-init",
+        "--output",
+        "json",
+      ],
+      "workspace import",
+    );
+  }
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "sand-session-"));
   try {
@@ -670,6 +709,63 @@ export async function createOmpSandbox(
   console.log(`Session ${sessionId}`);
   console.log(`Sandbox ${sandboxId}`);
   return sandboxId;
+}
+
+export async function deleteOmpSandbox(config: SandConfig, sandboxId: string): Promise<void> {
+  const sandbox = parseJson<{ labels?: Record<string, unknown> }>(
+    await requireCapture(
+      [
+        "aca",
+        "sandbox",
+        "get",
+        ...scope(config),
+        "--group",
+        config.azure.sandboxGroup,
+        "--id",
+        sandboxId,
+        "--output",
+        "json",
+      ],
+      "session lookup",
+    ),
+    "session lookup",
+  );
+  const sessionId = sandbox.labels?.session;
+  if (typeof sessionId !== "string" || sessionId === "") {
+    throw new Error(`sandbox ${sandboxId} has no Sand session label`);
+  }
+  await requireCapture(
+    [
+      "aca",
+      "sandbox",
+      "delete",
+      ...scope(config),
+      "--group",
+      config.azure.sandboxGroup,
+      "--id",
+      sandboxId,
+      "--yes",
+      "--output",
+      "json",
+    ],
+    "session deletion",
+  );
+  await requireCapture(
+    [
+      "aca",
+      "sandboxgroup",
+      "volume",
+      "delete",
+      ...scope(config),
+      "--group",
+      config.azure.sandboxGroup,
+      "--selector",
+      `session=${sessionId}`,
+      "--output",
+      "json",
+    ],
+    "session volume deletion",
+  );
 }
 
 export async function latestOmpSandbox(config: SandConfig): Promise<string | undefined> {

@@ -13,6 +13,7 @@ import {
 import { capture, runInteractive } from "./process";
 import {
   createOmpSandbox,
+  deleteOmpSandbox,
   latestOmpSandbox,
   registerWorkerImage,
   startOmpSession,
@@ -42,11 +43,11 @@ Usage:
   sand auth login PROVIDER
   sand auth import --from-local [--include-env] [--apply]
   sand models [PATTERN]
-  sand omp [--model PROVIDER/MODEL] [--repo URL] [--prompt TEXT]
+  sand omp [--model PROVIDER/MODEL] [--repo URL] [--workspace PATH] [--prompt TEXT]
   sand session list
   sand session attach SANDBOX_ID [--model PROVIDER/MODEL]
-  sand code [new] [--id SANDBOX_ID] [--repo URL] [--model PROVIDER/MODEL]
-  sand ssh [new] [--id SANDBOX_ID] [--repo URL] [--model PROVIDER/MODEL] [-- COMMAND...]
+  sand code [new] [--id SANDBOX_ID] [--repo URL] [--workspace PATH] [--model PROVIDER/MODEL]
+  sand ssh [new] [--id SANDBOX_ID] [--repo URL] [--workspace PATH] [--model PROVIDER/MODEL] [-- COMMAND...]
   sand session ssh SANDBOX_ID
   sand session exec SANDBOX_ID -- COMMAND [ARG...]
   sand session code SANDBOX_ID
@@ -602,6 +603,7 @@ async function devBoxCommand(
   const requestedId = takeOption(args, "--id");
   const model = takeOption(args, "--model");
   const repository = takeOption(args, "--repo");
+  const workspace = takeOption(args, "--workspace");
   if (args[0] === "--") {
     args.shift();
   }
@@ -610,16 +612,28 @@ async function devBoxCommand(
   }
 
   let sandboxId = requestedId;
-  if (sandboxId === undefined && !createNew) {
+  if (
+    requestedId !== undefined &&
+    (repository !== undefined || workspace !== undefined)
+  ) {
+    throw new Error("--repo and --workspace cannot be used with --id");
+  }
+  if (
+    sandboxId === undefined &&
+    !createNew &&
+    repository === undefined &&
+    workspace === undefined
+  ) {
     sandboxId = await latestOmpSandbox(config);
     if (sandboxId !== undefined) {
       console.log(`Using sandbox ${sandboxId} (run sand ${kind} new for a new one)`);
     }
   }
   if (sandboxId === undefined) {
-    const options: { model?: string; repository?: string } = {};
+    const options: { model?: string; repository?: string; workspace?: string } = {};
     if (model !== undefined) options.model = model;
     if (repository !== undefined) options.repository = repository;
+    if (workspace !== undefined) options.workspace = workspace;
     sandboxId = await createOmpSandbox(config, options);
   }
   return kind === "code"
@@ -666,17 +680,8 @@ async function sessionCommand(
   }
   if (operation === "stop") {
     assertNoArguments(args);
-    return runInteractive([
-      "aca",
-      "sandbox",
-      "delete",
-      ...acaScope(config),
-      "--group",
-      config.azure.sandboxGroup,
-      "--id",
-      sandboxId,
-      "--yes",
-    ]);
+    await deleteOmpSandbox(config, sandboxId);
+    return 0;
   }
   if (operation === "ssh" || operation === "exec") {
     if (args[0] === "--") {
@@ -764,8 +769,14 @@ async function main(): Promise<number> {
     const model = takeOption(args, "--model");
     const repository = takeOption(args, "--repo");
     const prompt = takeOption(args, "--prompt");
+    const workspace = takeOption(args, "--workspace");
     assertNoArguments(args);
-    const options: { model?: string; repository?: string; prompt?: string } = {};
+    const options: {
+      model?: string;
+      repository?: string;
+      prompt?: string;
+      workspace?: string;
+    } = {};
     if (model !== undefined) {
       options.model = model;
     }
@@ -774,6 +785,9 @@ async function main(): Promise<number> {
     }
     if (prompt !== undefined) {
       options.prompt = prompt;
+    }
+    if (workspace !== undefined) {
+      options.workspace = workspace;
     }
     return startOmpSession(await readConfig(configPath), configPath, options);
   }

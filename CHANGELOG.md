@@ -35,3 +35,10 @@
   connections validate their native certificates through the ACA egress proxy.
 - Start remote OMP quietly: no splash, setup wizard, changelog panel, or
   update check, and disable in-sandbox auto-update of the pinned OMP.
+- List the top-level `sand code` and `sand ssh` development-box commands in the
+  public command reference.
+- Transfer local Git worktrees through private, short-lived Blob packages for
+  OMP, VS Code, and SSH sessions.
+- Delete root session volumes with their sandboxes and collect child results
+  before deleting ephemeral child sandboxes and volumes.
+- Retain completed child result records for seven days and then prune them.

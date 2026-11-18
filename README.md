@@ -79,7 +79,13 @@ sand infra worker
 sand omp
 sand omp --model anthropic/claude-sonnet-4-6
 sand omp --repo https://github.com/OWNER/REPOSITORY.git
+sand omp --workspace .
 sand omp --model cursor/gpt-5.6-sol:medium --prompt "Delegate one check with sand_spawn"
+sand code
+sand code new --repo https://github.com/OWNER/REPOSITORY.git
+sand code new --workspace .
+sand ssh
+sand ssh new --workspace . -- git status
 sand session list
 sand session attach <sandbox-id>
 sand session ssh <sandbox-id>
@@ -102,17 +108,25 @@ sand sandbox shell <sandbox-id>
 sand sandbox shell <sandbox-id> --command 'HOME=/state/home omp -p --model cursor/gpt-5.6-sol:medium "Reply with exactly SAND_OK"'
 ```
 
+`sand code` opens the newest compatible session in VS Code Remote-SSH, while
+`sand code new` creates a session first. `sand ssh` provides the equivalent
+terminal workflow. Both commands use Sand-owned Ed25519 keys, pin the SSH host
+key through the authenticated ACA control plane, and connect over encrypted
+Iroh without a public port, password, VPN, or separate account login.
+
+Pass `--workspace PATH` when creating an OMP, Code, or SSH session to transfer
+the exact local Git `HEAD` plus modified, deleted, and untracked non-ignored
+files. Sand packages the repository history and worktree, uploads it through a
+private Blob with a one-hour read-only SAS, imports it before the session opens,
+and immediately deletes the Blob. Git-ignored files and submodules are not
+transferred; repositories containing submodules are rejected.
+
 `sand infra worker` keeps the current worker disk image and removes older Sand
 worker images that no sandbox references. Images backing running or suspended
-sandboxes are retained so those sandboxes remain resumable.
-
-Worker sandboxes expose a loopback-only OpenSSH server through an encrypted
-Iroh connection using dumbpipe. `sand session ssh` and `sand session exec`
-create and inject a Sand-owned Ed25519 key, pin the SSH host key through the
-authenticated ACA control plane, wake stopped sandboxes, and keep them active
-while the Iroh connection is open. `sand session code` opens `/workspace`
-through VS Code Remote-SSH using generated SSH configuration. No public port,
-password, VPN, or separate account login is required.
+sandboxes are retained so those sandboxes remain resumable. `sand session stop`
+deletes both a root sandbox and its persistent Data Disk. Child-agent results
+are copied into dispatcher state before their sandbox and volume are deleted;
+the compact result record is retained for seven days.
 
 Every `aca` invocation receives the configured subscription, resource group,
 region, and sandbox group explicitly. `sand` does not depend on or mutate a
@@ -192,6 +206,5 @@ Sand is available under the [MIT License](LICENSE).
 
 ## Remaining distribution work
 
-1. Add Blob workspace package transfer for dirty local worktrees.
-2. Publish standalone binaries, the container image, and deployment templates.
-3. Replace the preview ACA CLI dependency when the stable SDK is available.
+1. Publish standalone binaries, the container image, and deployment templates.
+2. Replace the preview ACA CLI dependency when the stable SDK is available.

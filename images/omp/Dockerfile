@@ -49,6 +49,7 @@ COPY session.sh /usr/local/bin/sand-omp-session
 COPY child-session.sh /usr/local/bin/sand-child-session
 COPY ssh-service.sh /usr/local/bin/sand-ssh-service
 COPY sand-omp.sh /usr/local/bin/sand-omp
+COPY workspace-init.sh /usr/local/bin/sand-workspace-init
 COPY sshd_config /etc/ssh/sshd_config_sand
 COPY dispatcher.py /opt/sand/dispatcher.py
 COPY sand-extension.ts /opt/sand/sand-extension.ts
@@ -58,6 +59,7 @@ RUN chmod 0755 \
     /usr/local/bin/sand-child-session \
     /usr/local/bin/sand-ssh-service \
     /usr/local/bin/sand-omp \
+    /usr/local/bin/sand-workspace-init \
     /opt/sand/dispatcher.py \
  && grep -Fqx 'export TERM="${TERM:-xterm-256color}"' /usr/local/bin/sand-omp-session \
     && grep -Fqx 'PasswordAuthentication no' /etc/ssh/sshd_config_sand \

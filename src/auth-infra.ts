@@ -343,6 +343,25 @@ export async function deployAuthInfrastructure(
   await requireRun(
     [
       "az",
+      "storage",
+      "container",
+      "create",
+      "--account-name",
+      storageName,
+      "--account-key",
+      storageKey,
+      "--name",
+      "workspaces",
+      "--public-access",
+      "off",
+      "--output",
+      "none",
+    ],
+    "workspace container creation",
+  );
+  await requireRun(
+    [
+      "az",
       "containerapp",
       "env",
       "storage",

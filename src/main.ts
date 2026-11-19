@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   defaultConfigPath,
   readConfig,
@@ -40,6 +44,7 @@ Usage:
   sand infra auth
   sand infra worker
   sand auth status
+  sand auth check [--strict] [--json]
   sand auth login PROVIDER
   sand auth import --from-local [--include-env] [--apply]
   sand models [PATTERN]
@@ -239,7 +244,12 @@ async function createInfrastructure(args: string[], configPath: string): Promise
   return 0;
 }
 
-async function authEnvironment(config: SandConfig): Promise<Record<string, string>> {
+interface AuthEnvironment extends Record<string, string> {
+  OMP_AUTH_BROKER_URL: string;
+  OMP_AUTH_BROKER_TOKEN: string;
+}
+
+async function authEnvironment(config: SandConfig): Promise<AuthEnvironment> {
   if (config.services === undefined) {
     throw new Error("credential plane is not deployed\nRun sand infra auth first.");
   }
@@ -270,7 +280,7 @@ async function authEnvironment(config: SandConfig): Promise<Record<string, strin
   };
 }
 
-async function waitForBroker(config: SandConfig): Promise<Record<string, string>> {
+async function waitForBroker(config: SandConfig): Promise<AuthEnvironment> {
   const environment = await authEnvironment(config);
   for (let attempt = 0; attempt < 15; attempt += 1) {
     const result = await capture(["omp", "auth-broker", "status"], environment);
@@ -280,6 +290,51 @@ async function waitForBroker(config: SandConfig): Promise<Record<string, string>
     await Bun.sleep(2_000);
   }
   throw new Error("auth broker did not become ready after scaling from zero");
+}
+
+async function brokerCredentialIds(
+  environment: AuthEnvironment,
+  provider: string,
+): Promise<number[]> {
+  const response = await fetch(`${environment.OMP_AUTH_BROKER_URL}/v1/snapshot`, {
+    headers: { Authorization: `Bearer ${environment.OMP_AUTH_BROKER_TOKEN}` },
+  });
+  if (!response.ok) {
+    throw new Error(`broker credential lookup failed: HTTP ${response.status}`);
+  }
+  const snapshot = (await response.json()) as { credentials?: unknown };
+  if (!Array.isArray(snapshot.credentials)) {
+    throw new Error("broker credential lookup returned an invalid snapshot");
+  }
+  return snapshot.credentials.flatMap((value) => {
+    if (typeof value !== "object" || value === null) return [];
+    const entry = value as Record<string, unknown>;
+    return entry.provider === provider && typeof entry.id === "number" ? [entry.id] : [];
+  });
+}
+
+async function disableBrokerCredentials(
+  environment: AuthEnvironment,
+  ids: readonly number[],
+): Promise<void> {
+  for (const id of ids) {
+    const response = await fetch(
+      `${environment.OMP_AUTH_BROKER_URL}/v1/credential/${id}/disable`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${environment.OMP_AUTH_BROKER_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ cause: "replaced by sand auth login" }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `broker credential ${id} disable failed: HTTP ${response.status}`,
+      );
+    }
+  }
 }
 
 async function deployAuth(args: string[], configPath: string): Promise<number> {
@@ -305,6 +360,20 @@ async function authStatus(args: string[], configPath: string): Promise<number> {
   const config = await readConfig(configPath);
   const environment = await waitForBroker(config);
   return runInteractive(["omp", "auth-broker", "status"], environment);
+}
+
+async function authCheck(args: string[], configPath: string): Promise<number> {
+  const strict = takeFlag(args, "--strict");
+  const json = takeFlag(args, "--json");
+  assertNoArguments(args);
+  const command = ["omp", "auth-gateway", "check"];
+  if (strict) command.push("--strict");
+  if (json) command.push("--json");
+  const config = await readConfig(configPath);
+  return runInteractive(command, {
+    ...(await waitForBroker(config)),
+    OMP_AUTH_BROKER_SNAPSHOT_TTL_MS: "0",
+  });
 }
 
 async function authImport(args: string[], configPath: string): Promise<number> {
@@ -340,21 +409,44 @@ async function authLogin(args: string[], configPath: string): Promise<number> {
     throw new Error("auth login requires a provider ID");
   }
   assertNoArguments(args);
-  const loginExit = await runInteractive(["omp", "auth-broker", "login", provider]);
-  if (loginExit !== 0) {
-    return loginExit;
-  }
+
   const config = await readConfig(configPath);
-  return runInteractive(
-    [
-      "omp",
-      "auth-broker",
-      "migrate",
-      "--from-local",
-      "--include-oauth",
-    ],
-    await waitForBroker(config),
-  );
+  const brokerEnvironment = await waitForBroker(config);
+  const replaceExisting = provider === "github-copilot";
+  const previousIds = replaceExisting
+    ? await brokerCredentialIds(brokerEnvironment, provider)
+    : [];
+  const loginDirectory = await mkdtemp(join(tmpdir(), "sand-auth-login-"));
+  try {
+    const loginEnvironment = { PI_CONFIG_DIR: loginDirectory };
+    const loginExit = await runInteractive(
+      ["omp", "auth-broker", "login", provider],
+      loginEnvironment,
+    );
+    if (loginExit !== 0) {
+      return loginExit;
+    }
+    const migrateExit = await runInteractive(
+      ["omp", "auth-broker", "migrate", "--from-local", "--include-oauth"],
+      { ...brokerEnvironment, ...loginEnvironment },
+    );
+    if (migrateExit !== 0 || !replaceExisting || previousIds.length === 0) {
+      return migrateExit;
+    }
+
+    const currentIds = await brokerCredentialIds(brokerEnvironment, provider);
+    const previous = new Set(previousIds);
+    if (!currentIds.some((id) => !previous.has(id))) {
+      throw new Error(
+        "new Copilot credential did not create a distinct broker record; old credentials were retained",
+      );
+    }
+    await disableBrokerCredentials(brokerEnvironment, previousIds);
+    console.log(`Retired ${previousIds.length} previous ${provider} credential(s).`);
+    return 0;
+  } finally {
+    await rm(loginDirectory, { recursive: true, force: true });
+  }
 }
 
 async function listModels(args: string[], configPath: string): Promise<number> {
@@ -723,6 +815,9 @@ async function main(): Promise<number> {
     const operation = args.shift();
     if (operation === "status") {
       return authStatus(args, configPath);
+    }
+    if (operation === "check") {
+      return authCheck(args, configPath);
     }
     if (operation === "login") {
       return authLogin(args, configPath);

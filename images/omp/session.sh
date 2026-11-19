@@ -3,9 +3,32 @@ set -euo pipefail
 
 export TERM="${TERM:-xterm-256color}"
 
+# Root sessions use the broker as the credential source of truth. Do not start
+# from the on-disk snapshot: a session restarted after login or token rotation
+# must fetch the broker's current credential generation before its first model
+# request. OAuth access-token refresh remains the broker's responsibility.
+export OMP_AUTH_BROKER_SNAPSHOT_TTL_MS=0
+
 if [[ -f /state/sand.env ]]; then
   # shellcheck disable=SC1091
   source /state/sand.env
+fi
+
+# Azure Container Apps may scale the broker to zero. Wait for its cold start
+# before OMP performs its shorter startup credential check.
+if [[ -n "${OMP_AUTH_BROKER_URL:-}" ]]; then
+  broker_ready=false
+  for _ in {1..15}; do
+    if omp auth-broker status >/dev/null 2>&1; then
+      broker_ready=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$broker_ready" != true ]]; then
+    printf 'auth broker did not become ready after scaling from zero: %s\n' "$OMP_AUTH_BROKER_URL" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$HOME/.omp" /workspace

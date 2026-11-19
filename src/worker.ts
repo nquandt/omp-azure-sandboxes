@@ -814,17 +814,11 @@ export async function startOmpSession(
   if (options.prompt !== undefined) {
     const command = [
       "HOME=/state/home",
-      "omp",
+      "/usr/local/bin/sand-omp-session",
       "--print",
       "--wait-async",
-      "--extension",
-      "/opt/sand/sand-extension.ts",
+      shellQuote(options.prompt),
     ];
-    const promptModel = options.model ?? config.defaults.model;
-    if (promptModel !== undefined) {
-      command.push("--model", shellQuote(promptModel));
-    }
-    command.push(shellQuote(options.prompt));
     return runInteractive([
       "aca",
       "sandbox",

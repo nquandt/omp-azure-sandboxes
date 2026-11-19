@@ -42,3 +42,21 @@
 - Delete root session volumes with their sandboxes and collect child results
   before deleting ephemeral child sandboxes and volumes.
 - Retain completed child result records for seven days and then prune them.
+- Document the planned progression toward portable Docker and cloud sessions,
+  safe snapshot and restore, multi-repository projects, and branch-producing
+  cloud agents.
+- Force cloud root sessions to fetch the broker's current credential snapshot
+  on OMP startup instead of using a cached snapshot from an earlier run, and
+  document Copilot 401 recovery versus 403 authorization failures.
+- Add `sand auth check [--strict] [--json]` to probe credentials through the
+  deployed broker and distinguish stored authentication from provider inference
+  authorization.
+- Isolate `sand auth login` from the developer's local OMP credential store and,
+  for GitHub Copilot, retire pre-existing broker rows only after the new OAuth
+  credential uploads successfully, preventing stale duplicate credentials from
+  winning account selection.
+- Make `sand auth check` bypass OMP's encrypted broker snapshot cache so it
+  reports the broker's current active rows immediately after credential
+  replacement.
+- Wait for a scale-to-zero auth broker to become ready before remote OMP starts,
+  avoiding transient credential failures during Container Apps cold starts.

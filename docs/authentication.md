@@ -100,6 +100,66 @@ Model-role changes persist with the remote session profile on its Data Disk.
 Users may optionally synchronize non-secret local model roles when creating a
 new remote profile.
 
+## Session startup and credential refresh
+
+Root sessions always fetch the current broker credential snapshot when OMP
+starts. They do not reuse the encrypted on-disk snapshot from an earlier
+sandbox run. The broker remains the canonical credential writer, refreshes
+OAuth credentials immediately on broker startup and every 60 seconds when they
+are within five minutes of expiry, and handles request-time auth recovery.
+
+Reattaching to a still-running `dtach` process does not restart OMP, but the
+broker-backed credential store continues receiving live snapshot updates. A
+new login therefore does not require recreating the sandbox.
+
+Use these commands from the trusted client machine, not from the sandbox:
+
+```text
+sand auth status
+sand auth check
+sand auth check --strict
+sand auth login github-copilot
+```
+
+`sand auth status` proves broker connectivity. `sand auth check` bypasses OMP's
+encrypted one-hour snapshot cache and probes the broker's current credentials
+without running a chat completion. `--strict` also sends a minimal chat request
+for each eligible credential; it consumes a small amount of quota and is the
+useful distinction between a stored credential and one the provider authorizes
+for inference. `sand auth login` performs a new provider login and migrates
+that OAuth credential into the broker.
+
+A GitHub Copilot HTTP 401 can indicate an expired or revoked credential and is
+eligible for OAuth recovery. A Copilot HTTP 403 stating that the token is valid
+but the account, model, feature, or integration identity is denied is an
+authorization decision, not a refresh failure. OMP tries the default
+`copilot-chat` integration identity and, when it was not explicitly pinned,
+retries once as `copilot-developer-cli`. If both are denied, relogin can only
+help when the broker holds a credential for the wrong GitHub account; otherwise
+the Copilot plan, model policy, or Business organization client policy must be
+changed.
+
+After a successful relogin, an unchanged 403 proves that refreshing was not the
+missing operation. Run `sand auth check --strict --json` to identify the denied
+broker credential. If other Copilot models work, the selected model is disabled
+by account or organization model policy. If every Copilot model fails while
+other providers pass, the organization is denying both OMP client identities.
+`COPILOT_INTEGRATION_ID` can pin an organization-approved identity, but Sand
+does not impersonate another client by default; use an override only when the
+organization administrator explicitly permits that identity.
+
+GitHub Copilot credentials currently have no stable broker `identityKey`.
+Uploading repeated local migrations can therefore create multiple active rows
+instead of updating the account already stored by the broker. Account selection
+may then choose an older revoked row even though a newer local login works.
+
+`sand auth login github-copilot` avoids this ambiguity by logging in through an
+isolated temporary OMP profile and uploading only that credential. After the
+upload succeeds and a distinct broker row is visible, Sand disables every
+Copilot row that existed before the login. A failed login or upload leaves the
+old broker rows active. Other providers retain OMP's normal multi-account
+upsert and rotation behavior.
+
 ## Security invariants
 
 - Refresh tokens remain in the credential plane.

@@ -70,6 +70,8 @@ sand doctor
 sand infra create --subscription ID --resource-group NAME --sandbox-group NAME --region REGION
 sand infra auth
 sand auth status
+sand auth check
+sand auth check --strict --json
 sand auth login anthropic
 sand auth import --from-local
 sand auth import --from-local --apply
@@ -187,6 +189,15 @@ Distribution targets:
   resources.
 - A separately versioned OMP plugin using the same dispatcher contract.
 - A custom worker image whose digest is configurable and pinned by deployments.
+
+## Design direction
+
+Sand is evolving from an Azure-only launcher into a manager for portable,
+isolated development sessions across local Docker and cloud backends. The
+[portable sessions and projects design](docs/portable-sessions.md) defines safe
+restore behavior, multi-repository projects, transactional movement, and
+branch-producing cloud agents. It is a progression document; its proposed
+commands and formats are not all implemented.
 
 ## Development
 
